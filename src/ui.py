@@ -1,83 +1,104 @@
-
 import flet as ft
 from datetime import datetime
-import asyncio
-from api import get_api_data
+from api import get_api_data, APIError
+import structlog
 
-def format_currency(value):
-    return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+logger = structlog.get_logger(__name__)
 
-def format_number(value):
-    return f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+def format_currency(value: float) -> str:
+    try:
+        return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except (ValueError, TypeError):
+        return "R$ --"
 
-def render_dashboard(page: ft.Page, title: str, endpoint: str):
-    valor_text = ft.Text(f"{title}:\n--", size=22, weight="bold")
-    qtde_text = ft.Text("Quantidade:\n--", size=22, weight="bold")
-    last_update = ft.Text("Última atualização: --", size=12, italic=True)
+def format_number(value: float) -> str:
+    try:
+        return f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except (ValueError, TypeError):
+        return "--"
 
-    dashboard = ft.ResponsiveRow([
-        ft.Container(valor_text, padding=20, bgcolor=ft.Colors.AMBER_100, col={"sm": 12, "md": 6}),
-        ft.Container(qtde_text, padding=20, bgcolor=ft.Colors.CYAN_100, col={"sm": 12, "md": 6}),
-    ])
+class Dashboard:
+    def __init__(self, page: ft.Page, title: str, endpoint: str):
+        self.page = page
+        self.title = title
+        self.endpoint = endpoint
+        self.error_display = ft.Text(color=ft.Colors.RED, visible=False)
+        self.valor_text = ft.Text(size=22, weight=ft.FontWeight.BOLD)
+        self.qtde_text = ft.Text(size=22, weight=ft.FontWeight.BOLD)
+        self.last_update = ft.Text("Última atualização: --", size=12, italic=True)
+        self.setup_view()
 
-    def carregar():
-        data = get_api_data(endpoint)
-        if "items" in data and len(data["items"]) > 0:
+    def setup_view(self):
+        dashboard = ft.Row(
+            controls=[
+                ft.Container(
+                    content=ft.Column([self.valor_text], alignment=ft.MainAxisAlignment.CENTER),
+                    padding=20, bgcolor=ft.Colors.AMBER_100, expand=True
+                ),
+                ft.Container(
+                    content=ft.Column([self.qtde_text], alignment=ft.MainAxisAlignment.CENTER),
+                    padding=20, bgcolor=ft.Colors.CYAN_100, expand=True
+                ),
+            ]
+        )
+
+        self.page.views.append(
+            ft.View(
+                route=f"/{self.endpoint}",
+                controls=[
+                    ft.Row([
+                        ft.ElevatedButton("Faturamento", on_click=lambda e: self.page.go("/faturamento")),
+                        ft.ElevatedButton("A Receber", on_click=lambda e: self.page.go("/areceber")),
+                        ft.ElevatedButton("A Pagar", on_click=lambda e: self.page.go("/apagar")),
+                    ]),
+                    ft.Text(f"📊 Dashboard: {self.title}", size=26, weight=ft.FontWeight.BOLD),
+                    self.error_display,
+                    ft.Divider(),
+                    dashboard,
+                    self.last_update,
+                    ft.ElevatedButton(
+                        "Atualizar Agora",
+                        on_click=lambda e: self.load_data()
+                    )
+                ]
+            )
+        )
+        self.load_data()
+
+    def load_data(self):
+        try:
+            data = get_api_data(self.endpoint)
+            if not data or "items" not in data or len(data["items"]) == 0:
+                raise APIError("Dados não encontrados", 404)
+
             item = data["items"][0]
             valor = item.get("valor_saida") or item.get("valor_total") or 0
             qtde = item.get("qtde_saida") or item.get("qtde_total") or 0
-            valor_text.value = f"💰 {title}:\n{format_currency(valor)}"
-            qtde_text.value = f"📦 Quantidade:\n{format_number(qtde)} m."
-            last_update.value = f"Última atualização: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
-        else:
-            valor_text.value = "Erro ao carregar valor"
-            qtde_text.value = "Erro ao carregar quantidade"
-        page.update()
 
-    async def atualizar_auto():
-        while True:
-            carregar()
-            await asyncio.sleep(900)
+            self.valor_text.value = f"💰 {self.title}:\n{format_currency(valor)}"
+            self.qtde_text.value = f"📦 Quantidade:\n{format_number(qtde)} m."
+            self.error_display.visible = False
+        except APIError as e:
+            self.valor_text.value = f"💰 {self.title}:\n--"
+            self.qtde_text.value = "📦 Quantidade:\n-- m."
+            self.error_display.value = f"Erro: {e.message}"
+            self.error_display.visible = True
+        except Exception as e:
+            logger.error("Erro inesperado", error=str(e))
+            self.error_display.value = "Erro interno"
+            self.error_display.visible = True
 
-    atualizar_btn = ft.ElevatedButton("Atualizar Agora", on_click=lambda e: carregar())
+        self.last_update.value = f"Última atualização: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+        self.page.update()
 
-    page.views.clear()
-    page.views.append(
-        ft.View(
-            route=f"/{endpoint}",
-            controls=[
-                menu_bar(page),
-                ft.Text(f"📊 Dashboard: {title}", size=26, weight="bold"),
-                atualizar_btn,
-                ft.Divider(),
-                dashboard,
-                last_update
-            ],
-            scroll="adaptive"
-        )
-    )
-
-    carregar()
-    page.run_task(atualizar_auto)
-    page.update()
-
-def menu_bar(page: ft.Page):
-    return ft.Row(
-        controls=[
-            ft.ElevatedButton("Faturamento", on_click=lambda _: page.go("/faturamento")),
-            ft.ElevatedButton("A Receber", on_click=lambda _: page.go("/areceber")),
-            ft.ElevatedButton("A Pagar", on_click=lambda _: page.go("/apagar")),
-        ],
-        alignment=ft.MainAxisAlignment.START,
-    )
-
-def dashboard_router(e: ft.RouteChangeEvent):
-    route = e.route.strip("/")
-    if route == "faturamento":
-        render_dashboard(e.page, "Faturamento", "api_faturamento_mes_atual")
-    elif route == "areceber":
-        render_dashboard(e.page, "Contas a Receber", "api_areceber")
-    elif route == "apagar":
-        render_dashboard(e.page, "Contas a Pagar", "api_apagar")
-    else:
-        e.page.go("/faturamento")
+def router(page: ft.Page, route: str):
+    routes = {
+        "faturamento": ("Faturamento", "api_faturamento_mes_atual"),
+        "areceber": ("Contas a Receber", "api_areceber"),
+        "apagar": ("Contas a Pagar", "api_apagar")
+    }
+    
+    route = route.strip("/") or "faturamento"
+    title, endpoint = routes.get(route, routes["faturamento"])
+    
+    Dashboard(page, title, endpoint)
