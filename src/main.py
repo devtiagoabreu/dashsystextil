@@ -2,6 +2,7 @@ import flet as ft
 from ui import router
 import structlog
 
+
 def configure_logging():
     structlog.configure(
         processors=[
